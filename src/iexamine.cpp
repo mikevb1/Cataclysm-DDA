@@ -1732,8 +1732,8 @@ void iexamine::aggie_plant(player *p, map *m, const tripoint &examp)
             // 20% of a seasons length. (default 2.8 days).
             WORLDPTR world = world_generator->active_world;
             int fertilizerEpoch = 14400 * 2; //default if options is empty for some reason.
-            if (!world->world_options.empty()) {
-                fertilizerEpoch = 14400 * (world->world_options["SEASON_LENGTH"] * 0.2) ;
+            if (!world->WORLD_OPTIONS.empty()) {
+                fertilizerEpoch = 14400 * (world->WORLD_OPTIONS["SEASON_LENGTH"] * 0.2) ;
             }
 
             item &seed = m->i_at( examp ).front();
@@ -2671,7 +2671,7 @@ void iexamine::curtains(player *p, map *m, const tripoint &examp)
         p->add_msg_if_player( _("You carefully peek through the curtains.") );
     } else if( choice == 2 ) {
         // Mr. Gorbachev, tear down those curtains!
-        m->ter_set( examp, "t_window" );
+        m->ter_set( examp, "t_window_no_curtains" );
         m->spawn_item( p->pos(), "nail", 1, 4 );
         m->spawn_item( p->pos(), "sheet", 2 );
         m->spawn_item( p->pos(), "stick" );

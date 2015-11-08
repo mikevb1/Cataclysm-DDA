@@ -569,7 +569,9 @@ void player::apply_persistent_morale()
         } else if (has_effect("took_prozac")) {
             pen = int(pen / 2);
         }
-        add_morale(MORALE_PERM_HOARDER, -pen, -pen, 5, 5, true);
+        if (pen > 0) {
+            add_morale(MORALE_PERM_HOARDER, -pen, -pen, 5, 5, true);
+        }
     }
 
     // The stylish get a morale bonus for each body part covered in an item
@@ -2819,7 +2821,7 @@ Strength - 4;    Dexterity - 4;    Intelligence - 4;    Perception - 4"));
 
     for( auto &speed_effect : speed_effects ) {
         nc_color col = ( speed_effect.second > 0 ? c_green : c_red );
-        mvwprintz( w_speed, line, 1, col, "%s", speed_effect.first.c_str() );
+        mvwprintz( w_speed, line, 1, col, "%s", _(speed_effect.first.c_str()) );
         mvwprintz( w_speed, line, 21, col, ( speed_effect.second > 0 ? "+" : "-" ) );
         mvwprintz( w_speed, line, ( abs( speed_effect.second ) >= 10 ? 22 : 23 ), col, "%d%%",
                    abs( speed_effect.second ) );
@@ -10261,12 +10263,15 @@ bool player::wield(item* it, bool autodrop)
                 return false;
         } else {
         add_msg(m_info, _("You are too weak to wield %s with only one arm."),
-                it->tname().c_str()); 
+                it->tname().c_str());
                 return false;
         }
     }
-    
+
     if (!is_armed()) {
+        if (is_wearing_item(*it)) {
+            it->on_takeoff(*this);
+        }
         weapon = i_rem(it);
         moves -= 30;
         weapon.on_wield( *this );
@@ -10274,6 +10279,9 @@ bool player::wield(item* it, bool autodrop)
         return true;
     } else if (volume_carried() + weapon.volume() - it->volume() < volume_capacity()) {
         item tmpweap = remove_weapon();
+        if (is_wearing_item(*it)) {
+            it->on_takeoff(*this);
+        }
         weapon = i_rem(it);
         inv.add_item_keep_invlet(tmpweap);
         inv.unsort();
@@ -10284,6 +10292,9 @@ bool player::wield(item* it, bool autodrop)
     } else if (query_yn(_("No space in inventory for your %s.  Drop it?"),
                         weapon.tname().c_str())) {
         g->m.add_item_or_charges(posx(), posy(), remove_weapon());
+        if (is_wearing_item(*it)) {
+            it->on_takeoff(*this);
+        }
         weapon = i_rem(it);
         inv.unsort();
         moves -= 30;
@@ -10512,6 +10523,20 @@ hint_rating player::rate_action_wear( const item &it ) const
 
     return HINT_GOOD;
 }
+
+
+hint_rating player::rate_action_change_side( const item &it ) const {
+   if (!is_wearing_item(it)) {
+      return HINT_IFFY;
+   }
+
+    if (!it.is_sided()) {
+        return HINT_CANT;
+    }
+
+    return HINT_GOOD;
+}
+
 
 bool player::wear(int inventory_position, bool interactive)
 {
@@ -10856,16 +10881,48 @@ bool player::wear_item( const item &to_wear, bool interactive )
     return true;
 }
 
+bool player::change_side (item *target, bool interactive)
+{
+    return change_side(get_item_position(target), interactive);
+}
+
+bool player::change_side (int pos, bool interactive) {
+    int idx = worn_position_to_index(pos);
+    if (static_cast<size_t>(idx) >= worn.size()) {
+        if (interactive) {
+            add_msg_if_player(m_info, _("You are not wearing that item."));
+        }
+        return false;
+    }
+
+    auto it = worn.begin();
+    std::advance(it, idx);
+
+    if (!it->is_sided()) {
+        if (interactive) {
+            add_msg_if_player(m_info, _("You cannot swap the side on which your %s is worn."), it->tname().c_str());
+        }
+        return false;
+    }
+
+    it->set_side(it->get_side() == LEFT ? RIGHT : LEFT);
+
+    if (interactive) {
+        add_msg_if_player(m_info, _("You swap the side on which your %s is worn."), it->tname().c_str());
+        moves -= 250;
+    }
+
+    return true;
+}
+
 hint_rating player::rate_action_takeoff( const item &it ) const
 {
     if (!it.is_armor()) {
         return HINT_CANT;
     }
 
-    for (auto &i : worn) {
-        if (i.invlet == it.invlet) { //surely there must be an easier way to do this?
-            return HINT_GOOD;
-        }
+    if (is_wearing_item(it)) {
+      return HINT_GOOD;
     }
 
     return HINT_IFFY;
@@ -10908,6 +10965,8 @@ bool player::takeoff(int inventory_position, bool autodrop, std::vector<item> *i
                 return false;
             }
 
+            other_armor.on_takeoff(*this);
+
             if( items != nullptr ) {
                 items->push_back( other_armor );
             } else {
@@ -10922,13 +10981,15 @@ bool player::takeoff(int inventory_position, bool autodrop, std::vector<item> *i
     }
 
     if( items != nullptr ) {
+        w.on_takeoff(*this);
         items->push_back( w );
         taken_off = true;
     } else if (autodrop || volume_capacity() - w.get_storage() >= volume_carried() + w.volume()) {
+        w.on_takeoff(*this);
         inv.add_item_keep_invlet(w);
         taken_off = true;
-    } else if (query_yn(_("No room in inventory for your %s.  Drop it?"),
-            w.tname().c_str())) {
+    } else if (query_yn(_("No room in inventory for your %s.  Drop it?"), w.tname().c_str())) {
+        w.on_takeoff(*this);
         g->m.add_item_or_charges( pos(), w );
         taken_off = true;
     } else {
@@ -11083,21 +11144,22 @@ bool player::has_enough_charges( const item &it, bool show_msg ) const
 
 bool player::consume_charges(item *used, long charges_used)
 {
+    // Non-tools can use charges too - when they're comestibles
     const auto tool = dynamic_cast<const it_tool*>(used->type);
-    if( tool == nullptr || charges_used <= 0 ) {
-        // Non-tools don't use charges
-        // Canceled or not used up or whatever
+    const auto comest = dynamic_cast<const it_comest*>(used->type);
+    if( charges_used <= 0 || (tool == nullptr && comest == nullptr) ) {
         return false;
     }
 
-    if( tool->charges_per_use <= 0 ) {
+    if( tool != nullptr && tool->charges_per_use <= 0 ) {
         // An item that doesn't normally expend charges is destroyed instead.
         /* We can't be certain the item is still in the same position,
          * as other items may have been consumed as well, so remove
          * the item directly instead of by its position. */
-        i_rem(used);
+        i_rem( used );
         return true;
     }
+
     if( used->has_flag( "USE_UPS" ) ) {
         use_charges( "UPS", charges_used );
         //Replace 1 with charges it needs to use.
@@ -11107,6 +11169,12 @@ bool player::consume_charges(item *used, long charges_used)
     } else {
         used->charges -= std::min( used->charges, charges_used );
     }
+
+    if( comest != nullptr && used->charges <= 0 ) {
+        i_rem( used );
+        return true;
+    }
+
     // We may have fiddled with the state of the item in the iuse method,
     // so restack to sort things out.
     inv.restack();
@@ -11316,12 +11384,17 @@ activate your weapon."), gun->tname().c_str(), _(mod->location.c_str()));
 
 bool player::invoke_item( item* used )
 {
+    return invoke_item( used, pos() );
+}
+
+bool player::invoke_item( item* used, const tripoint &pt )
+{
     if( !has_enough_charges( *used, true ) ) {
         return false;
     }
 
     if( used->type->use_methods.size() < 2 ) {
-        const long charges_used = used->type->invoke( this, used, pos3() );
+        const long charges_used = used->type->invoke( this, used, pt );
         return consume_charges( used, charges_used );
     }
 
@@ -11334,7 +11407,7 @@ bool player::invoke_item( item* used )
     umenu.text = string_format( _("What to do with your %s?"), used->tname().c_str() );
     int num_total = 0;
     for( const auto &um : used->type->use_methods ) {
-        bool usable = um.can_call( this, used, false, pos3() );
+        bool usable = um.can_call( this, used, false, pt );
         const std::string &aname = um.get_name();
         umenu.addentry( num_total, usable, MENU_AUTOASSIGN, aname );
         num_total++;
@@ -11348,11 +11421,16 @@ bool player::invoke_item( item* used )
     }
 
     const std::string &method = used->type->use_methods[choice].get_type_name();
-    long charges_used = used->type->invoke( this, used, pos3(), method );
+    long charges_used = used->type->invoke( this, used, pt, method );
     return consume_charges( used, charges_used );
 }
 
 bool player::invoke_item( item* used, const std::string &method )
+{
+    return invoke_item( used, method, pos() );
+}
+
+bool player::invoke_item( item* used, const std::string &method, const tripoint &pt )
 {
     if( !has_enough_charges( *used, true ) ) {
         return false;
@@ -11369,7 +11447,7 @@ bool player::invoke_item( item* used, const std::string &method )
         return consume_item( *used );
     }
 
-    long charges_used = actually_used->type->invoke( this, actually_used, pos3(), method );
+    long charges_used = actually_used->type->invoke( this, actually_used, pt, method );
     return consume_charges( actually_used, charges_used );
 }
 
@@ -12354,6 +12432,12 @@ int player::encumb( body_part bp ) const
     return encumb( bp, iLayers, iArmorEnc, ret_null );
 }
 
+int player::encumb( body_part bp, const item &new_item ) const {
+    int iArmorEnc = 0;
+    double iLayers = 0;
+    return encumb( bp, iLayers, iArmorEnc, new_item );
+}
+
 int player::encumb( body_part bp, double &layers, int &armorenc ) const
 {
     return encumb( bp, layers, armorenc, ret_null );
@@ -12877,6 +12961,10 @@ bool player::wearing_something_on(body_part bp) const
             return true;
     }
     return false;
+}
+
+bool player::is_wearing_item (const item& it) const {
+   return std::any_of(worn.begin(), worn.end(), [&](const item& elem) { return &elem == &it; });
 }
 
 bool player::is_wearing_shoes(std::string side) const

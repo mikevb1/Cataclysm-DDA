@@ -404,7 +404,13 @@ class game
         int inv_for_filter(const std::string &title, item_filter filter);
         int inv_for_unequipped(std::string const &title, item_filter filter);
         int display_slice(indexed_invslice const&, const std::string &, bool show_worn = true, int position = INT_MIN);
-        int inventory_item_menu(int pos, int startx = 0, int width = 50, int position = 0);
+        enum inventory_item_menu_positon {
+            RIGHT_TERMINAL_EDGE,
+            LEFT_OF_INFO,
+            RIGHT_OF_INFO,
+            LEFT_TERMINAL_EDGE,
+        };
+        int inventory_item_menu(int pos, int startx = 0, int width = 50, inventory_item_menu_positon position = RIGHT_OF_INFO);
 
         // Combines filtered player inventory with filtered ground and vehicle items to create a pseudo-inventory.
         item_location inv_map_splice( item_filter inv_filter,
@@ -660,6 +666,7 @@ class game
         void use_wielded_item();
         void wear(int pos = INT_MIN); // Wear armor  'W' (or 'a')
         void takeoff(int pos = INT_MIN); // Remove armor  'T'
+        void change_side(int pos = INT_MIN); // Change the side on which an item is worn 'c'
         void reload(); // Reload a wielded gun/tool  'r'
         void reload(int pos);
         void unload(item &it); // Unload a gun/tool  'U'
